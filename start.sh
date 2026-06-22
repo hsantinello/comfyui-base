@@ -200,6 +200,42 @@ else
     echo "Using existing ComfyUI installation"
 fi
 
+# ---------------------------------------------------------------------------- #
+#        Selecao automatica de CUDA conforme a placa (cu128 / cu130)            #
+#  Placas Blackwell (RTX 5090, B200... compute capability >= 10.0) usam cu130;  #
+#  todas as outras usam o cu128 ja embutido na imagem. A troca acontece so      #
+#  quando a placa muda, e fica registrada em .cuda-variant (persiste no volume).#
+#  Pins espelham docker-bake.hcl (torch 2.10.0, torchvision 0.25.0, audio 2.10).#
+# ---------------------------------------------------------------------------- #
+VARIANT_FILE="$COMFYUI_DIR/.cuda-variant"
+CC=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -n1 | tr -d ' ')
+WANT="cu128"
+if [ -n "$CC" ] && [ "$(awk -v c="$CC" 'BEGIN{print (c+0>=10.0)?1:0}')" = "1" ]; then
+    WANT="cu130"
+fi
+CURRENT="cu128"
+[ -f "$VARIANT_FILE" ] && CURRENT=$(cat "$VARIANT_FILE")
+echo "GPU detectada: compute capability ${CC:-desconhecida} -> alvo CUDA: $WANT (atual: $CURRENT)"
+
+if [ "$WANT" != "$CURRENT" ]; then
+    if [ "$WANT" = "cu130" ]; then
+        echo "Placa Blackwell detectada — instalando PyTorch cu130 (pode levar alguns minutos no primeiro boot)..."
+        if pip install --no-cache-dir --upgrade \
+            torch==2.10.0+cu130 torchvision==0.25.0+cu130 torchaudio==2.10.0+cu130 \
+            --index-url https://download.pytorch.org/whl/cu130; then
+            echo "$WANT" > "$VARIANT_FILE"
+            echo "PyTorch cu130 pronto."
+        else
+            echo "AVISO: falha ao instalar cu130 — mantendo o ambiente atual (cu128)."
+        fi
+    else
+        echo "Placa nao-Blackwell — revertendo para o PyTorch cu128 embutido na imagem..."
+        pip uninstall -y torch torchvision torchaudio 2>/dev/null || true
+        echo "$WANT" > "$VARIANT_FILE"
+        echo "Usando PyTorch cu128 embutido."
+    fi
+fi
+
 # Warm up pip so ComfyUI-Manager's 5s timeout check doesn't fail on cold start
 python -m pip --version > /dev/null 2>&1
 
